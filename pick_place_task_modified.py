@@ -37,6 +37,9 @@ from .controllers import (
 from .robots import JointGripperConfig, SurfaceGripperConfig
 from .scenario import ManipulationScenario
 
+import os
+import json
+from pathlib import Path
 
 class PickPlaceTask:
     """One reusable, callback-free pick/place task."""
@@ -77,6 +80,118 @@ class PickPlaceTask:
         self._surface_gripper_interface = None
         self._surface_gripper_path: str | None = None
         self.cube_colors: list[str] = ["blue", "red"]
+
+        # 准备eposide数据收集
+        self._episode_index = 0
+        self._episode_frames = []
+        self._dataset_root = Path("vla_dataset")
+        self._dataset_root.mkdir(parents=True, exist_ok=True)
+
+    def _record_step(self, estimated: mg.RobotState, desired: mg.RobotState | None) -> None:
+        frame = {
+            "time": float(self._time),
+            "active_cube": int(self._active_cube),
+            "phase": self.controller.phase.name,
+            "cube_position": self._cube_position().copy(),
+            "place_position": self.place_positions[self._active_cube].copy(),
+        }
+
+        # Robot joint state
+        if estimated.joints is not None:
+            if estimated.joints.positions is not None:
+                frame["joint_positions"] = (
+                    estimated.joints.positions.numpy().copy()
+                )
+
+            if estimated.joints.velocities is not None:
+                frame["joint_velocities"] = (
+                    estimated.joints.velocities.numpy().copy()
+                )
+
+        # Robot action state
+        if desired is not None and desired.joints is not None:
+            if desired.joints.positions is not None:
+                frame["action_joint_position"] = (
+                    desired.joints.positions.numpy().copy()
+                )
+
+            if desired.joints.velocities is not None:
+                frame["action_joint_velocity"] = (
+                    desired.joints.velocities.numpy().copy()
+                )
+
+        self._episode_frames.append(frame)
+
+    def _save_episode(self) -> None:
+        if not self._episode_frames:
+            return
+
+        episode_dir = self._dataset_root / f"episode_{self._episode_index:06d}"
+        episode_dir.mkdir(parents=True, exist_ok=True)
+
+        times = np.asarray(
+            [frame["time"] for frame in self._episode_frames],
+            dtype=np.float32,
+        )
+
+        active_cubes = np.asarray(
+            [frame["active_cube"] for frame in self._episode_frames],
+            dtype=np.int32,
+        )
+
+        cube_positions = np.stack(
+            [frame["cube_position"] for frame in self._episode_frames]
+        )
+
+        place_positions = np.stack(
+            [frame["place_position"] for frame in self._episode_frames]
+        )
+
+        joint_positions = np.stack(
+            [frame["joint_positions"] for frame in self._episode_frames]
+        )
+
+        joint_velocities = np.stack(
+            [frame["joint_velocities"] for frame in self._episode_frames]
+        )
+
+        phases = np.asarray(
+            [frame["phase"] for frame in self._episode_frames]
+        )
+
+        np.savez_compressed(
+            episode_dir / "trajectory.npz",
+            timestamp=times,
+            active_cube=active_cubes,
+            cube_position=cube_positions,
+            place_position=place_positions,
+            joint_position=joint_positions,
+            joint_velocity=joint_velocities,
+            phase=phases,
+        )
+
+        metadata = {
+            "episode_index": self._episode_index,
+            "success": self._done,
+            "failure_reason": self._failure_reason,
+            "num_frames": len(self._episode_frames),
+            "instruction": "pick and place the cubes",
+        }
+
+        with open(
+            episode_dir / "metadata.json",
+            "w",
+            encoding="utf-8",
+        ) as f:
+            json.dump(metadata, f, indent=2)
+
+        print(
+            f"[Dataset] Saved episode {self._episode_index}: "
+            f"{len(self._episode_frames)} frames"
+        )
+
+        self._episode_index += 1
+        self._episode_frames.clear()
 
     def setup_scene(self) -> None:
         self.scenario.setup_scene()
@@ -316,6 +431,7 @@ class PickPlaceTask:
             return True
         if self._active_cube + 1 == len(self.cubes):
             self._done = True
+            self._save_episode() # 收集数据
             return True
         self._active_cube += 1
         self._time = 0.0
@@ -332,6 +448,7 @@ class PickPlaceTask:
             return False
         self.scenario.sync_world()
         estimated = self.scenario.read_robot_state() # robot state / proprioception
+
         if self._needs_reset: # 第一次运行：创建goal
             self._goal_setpoint = self._capture_setpoint()
             if not self.controller.reset(estimated, self._goal_setpoint, self._time):
@@ -343,6 +460,12 @@ class PickPlaceTask:
         else:
             self._time += dt # 真正产生机器人动作的地方
             desired = self.controller.forward(estimated, self._goal_setpoint, self._time) # estimated=机器人现在在哪里，goal setpoint=cube在哪里+要放哪里，time=当前执行时间
+
+            self._record_step(
+                estimated=estimated,
+                desired=desired,
+            )
+            
             self.scenario.apply_robot_state(desired)
             self._sync_active_planning_collision()
             if not self._grasp_checked and self.controller.phase is PickPlacePhase.LIFT:
