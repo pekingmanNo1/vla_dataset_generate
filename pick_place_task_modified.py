@@ -84,6 +84,7 @@ class PickPlaceTask:
         # 准备eposide数据收集
         self._episode_index = 0
         self._episode_frames = []
+        self._max_episodes = 100
         self._dataset_root = Path("vla_dataset")
         self._dataset_root.mkdir(parents=True, exist_ok=True)
 
@@ -192,6 +193,32 @@ class PickPlaceTask:
 
         self._episode_index += 1
         self._episode_frames.clear()
+
+    def _start_next_episode(self) -> None:
+        # 重新开始任务状态
+        self._done = False
+        self._failure_reason = None
+
+        self._active_cube = 0
+        self._time = 0.0
+
+        self._needs_reset = True
+        self._goal_setpoint = None
+
+        self._grasp_checked = False
+        self._lift_checked = False
+
+        self._settle_time = 0.0
+        self._completion_time = 0.0
+
+        # 机器人回默认状态
+        self.scenario.articulation.reset_to_default_state()
+
+        # 所有 cube 回默认状态
+        for cube in self.cubes:
+            cube.reset_to_default_state()
+
+        print(f"[Dataset] Starting episode {self._episode_index}")
 
     def setup_scene(self) -> None:
         self.scenario.setup_scene()
@@ -429,10 +456,23 @@ class PickPlaceTask:
                 self._restore_planning_collision()
                 return False
             return True
+
         if self._active_cube + 1 == len(self.cubes):
             self._done = True
-            self._save_episode() # 收集数据
+
+            # 保存当前 episode
+            self._save_episode()
+
+            # 已经达到最大 episode 数
+            if self._episode_index >= self._max_episodes:
+                print("[Dataset] Collection complete.")
+                return True
+
+            # 开始下一 episode
+            self._start_next_episode()
+
             return True
+        
         self._active_cube += 1
         self._time = 0.0
         self._needs_reset = True
