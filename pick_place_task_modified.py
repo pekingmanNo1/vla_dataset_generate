@@ -602,6 +602,12 @@ class PickPlaceTask:
 
             desired = self.controller.forward(estimated, self._goal_setpoint, self._time) # estimated=机器人现在在哪里，goal setpoint=cube在哪里+要放哪里，time=当前执行时间
 
+            if self.controller.failed:
+                return self._handle_episode_failure(
+                    self.controller.failure_reason
+                    or f"Controller failed at phase {self.controller.phase.name}"
+                )
+            
             self._record_step(
                 estimated=estimated,
                 desired=desired,
@@ -633,7 +639,9 @@ class PickPlaceTask:
                     return self._handle_episode_failure(
                         self._failure_reason or "Lift validation failed"
                     )
-        return not self.failed
+
+        return True
+
 
     @property
     def is_done(self) -> bool:
