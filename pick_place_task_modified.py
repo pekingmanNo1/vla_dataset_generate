@@ -50,7 +50,7 @@ class PickPlaceTask:
         cube_path: str = "/World/Cube",
         offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
         cube_positions: list[tuple[float, float, float]] | None = None,
-        place_position: list[tuple[float, float, float]] | None = None,
+        place_positions: list[tuple[float, float, float]] | None = None,
         robot_name: str = "franka",
     ) -> None:
         self.scenario = ManipulationScenario(robot_name, robot_prim_path=robot_path, offset=offset)
@@ -58,10 +58,19 @@ class PickPlaceTask:
         self.offset = np.asarray(offset, dtype=np.float32)
         if cube_positions is None:
             cube_positions = [(0.5, 0.0, 0.0258),(0.4, 0.4, 0.0258)]
-        if place_position is None:
-            place_positions = [(0.0, 0.5, 0.0258),(0.2, 0.5, 0.0258)]
+        if place_positions is None:
+            place_positions = [
+                (0.0, 0.5, 0.0258),
+                (0.2, 0.5, 0.0258),
+            ]
+
+        self.place_positions = [
+            self.offset + np.asarray(position, dtype=np.float32)
+            for position in place_positions
+        ]
+
+            
         self.pick_positions = [self.offset + np.asarray(position, dtype=np.float32) for position in cube_positions]
-        self.place_positions = [self.offset + np.asarray(place_position, dtype=np.float32) for place_position in place_positions]
         self.cubes: list[RigidPrim] = []
         self.cube_paths: list[str] = []
         self.controller: PickPlaceController | None = None
@@ -87,6 +96,10 @@ class PickPlaceTask:
         self._max_episodes = 100
         self._dataset_root = Path("vla_dataset")
         self._dataset_root.mkdir(parents=True, exist_ok=True)
+
+        # 判断是否卡住
+        self._episode_time = 0.0
+        self._episode_timeout = 40.0
 
     def _record_step(self, estimated: mg.RobotState, desired: mg.RobotState | None) -> None:
         frame = {
@@ -160,6 +173,14 @@ class PickPlaceTask:
             [frame["phase"] for frame in self._episode_frames]
         )
 
+        action_joint_positions = np.stack(
+            [frame["action_joint_position"] for frame in self._episode_frames]
+        )
+
+        action_joint_velocities = np.stack(
+            [frame["action_joint_velocity"] for frame in self._episode_frames]
+        )
+
         np.savez_compressed(
             episode_dir / "trajectory.npz",
             timestamp=times,
@@ -168,6 +189,8 @@ class PickPlaceTask:
             place_position=place_positions,
             joint_position=joint_positions,
             joint_velocity=joint_velocities,
+            action_joint_position=action_joint_positions,
+            action_joint_velocity=action_joint_velocities,
             phase=phases,
         )
 
@@ -199,6 +222,8 @@ class PickPlaceTask:
         self._done = False
         self._failure_reason = None
 
+        self._episode_time = 0.0
+
         self._active_cube = 0
         self._time = 0.0
 
@@ -218,7 +243,36 @@ class PickPlaceTask:
         for cube in self.cubes:
             cube.reset_to_default_state()
 
+        # 每个 episode 随机化
+        self._randomize_episode()
+
         print(f"[Dataset] Starting episode {self._episode_index}")
+
+    def _randomize_episode(self) -> None:
+        # 随机 cube 位置
+        for i, cube in enumerate(self.cubes):
+            x = np.random.uniform(0.40, 0.55)
+            y = np.random.uniform(-0.15, 0.15)
+            z = 0.0258
+
+            position = np.asarray([x, y, z], dtype=np.float32)
+
+            self.pick_positions[i] = position
+
+            cube.set_world_poses(
+                positions=np.asarray([position], dtype=np.float32)
+            )
+
+        # 随机 place 位置
+        for i in range(len(self.place_positions)):
+            x = np.random.uniform(-0.15, 0.15)
+            y = np.random.uniform(0.35, 0.55)
+            z = 0.0258
+
+            self.place_positions[i] = np.asarray(
+                [x, y, z],
+                dtype=np.float32
+            )
 
     def setup_scene(self) -> None:
         self.scenario.setup_scene()
@@ -310,6 +364,7 @@ class PickPlaceTask:
         self._release_attachment()
         self._restore_planning_collision()
         self._time = 0.0
+        self._episode_time = 0.0
         self._needs_reset = True
         self._active_cube = 0
         self._goal_setpoint = None
@@ -437,6 +492,27 @@ class PickPlaceTask:
         self._grasp_checked = True
         return True
 
+    def _handle_episode_failure(self, reason: str) -> bool:
+        self._failure_reason = reason
+
+        print(
+            f"[Dataset] Episode {self._episode_index} failed: "
+            f"{self._failure_reason}"
+        )
+
+        # 保存失败 episode
+        self._save_episode()
+
+        # 达到目标数量就结束
+        if self._episode_index >= self._max_episodes:
+            print("[Dataset] Collection complete.")
+            return False
+
+        # 否则进入下一 episode
+        self._start_next_episode()
+
+        return True
+
     def _finish_active_goal(self, dt: float) -> bool:
         if self._goal_setpoint is None or self._goal_setpoint.sites is None:
             self._failure_reason = "Pick/place goal is unavailable."
@@ -484,21 +560,46 @@ class PickPlaceTask:
         return True
 
     def step(self, dt: float) -> bool:
-        if self.controller is None or self._done or self._failure_reason is not None:
+        if self.controller is None:
             return False
+
+        # episode total time
+        self._episode_time += dt
+
+        # timeout check
+        if self._episode_time >= self._episode_timeout:
+            return self._handle_episode_failure(
+                f"Episode timeout at phase {self.controller.phase.name}"
+            )
+    
         self.scenario.sync_world()
         estimated = self.scenario.read_robot_state() # robot state / proprioception
 
         if self._needs_reset: # 第一次运行：创建goal
             self._goal_setpoint = self._capture_setpoint()
-            if not self.controller.reset(estimated, self._goal_setpoint, self._time):
-                return False
+            if not self.controller.reset(
+                estimated,
+                self._goal_setpoint,
+                self._time
+            ):
+                return self._handle_episode_failure(
+                    self.controller.failure_reason
+                    or "Controller reset failed"
+                )
             self._needs_reset = False
             self._sync_active_planning_collision()
         elif self.controller.is_done:
-            return self._finish_active_goal(dt)
+            result = self._finish_active_goal(dt)
+
+            if self._failure_reason is not None:
+                return self._handle_episode_failure(
+                    self._failure_reason
+                )
+
+            return result
         else:
             self._time += dt # 真正产生机器人动作的地方
+
             desired = self.controller.forward(estimated, self._goal_setpoint, self._time) # estimated=机器人现在在哪里，goal setpoint=cube在哪里+要放哪里，time=当前执行时间
 
             self._record_step(
@@ -508,9 +609,15 @@ class PickPlaceTask:
             
             self.scenario.apply_robot_state(desired)
             self._sync_active_planning_collision()
-            if not self._grasp_checked and self.controller.phase is PickPlacePhase.LIFT:
+            if (
+                not self._grasp_checked
+                and self.controller.phase is PickPlacePhase.LIFT
+            ):
                 if not self._validate_grasp(estimated):
-                    return False
+                    return self._handle_episode_failure(
+                        self._failure_reason or "Grasp validation failed"
+                    )
+                
             if (
                 not self._lift_checked
                 and self.controller.phase
@@ -521,9 +628,11 @@ class PickPlaceTask:
                     PickPlacePhase.RETREAT,
                     PickPlacePhase.DONE,
                 }
-                and not self._validate_lift(estimated)
             ):
-                return False
+                if not self._validate_lift(estimated):
+                    return self._handle_episode_failure(
+                        self._failure_reason or "Lift validation failed"
+                    )
         return not self.failed
 
     @property
