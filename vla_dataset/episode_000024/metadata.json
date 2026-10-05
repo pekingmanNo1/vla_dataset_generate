@@ -1,0 +1,7 @@
+{
+  "episode_index": 24,
+  "success": false,
+  "failure_reason": "APPROACH_PICK timed out after 5.000 s (position error 0.2460 m, orientation error 0.4474 rad).",
+  "num_frames": 788,
+  "instruction": "pick and place the cubes"
+}

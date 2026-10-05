@@ -103,7 +103,7 @@ class PickPlaceTask:
 
     def _record_step(self, estimated: mg.RobotState, desired: mg.RobotState | None) -> None:
         frame = {
-            "time": float(self._time),
+            "time": float(self._episode_time),
             "active_cube": int(self._active_cube),
             "phase": self.controller.phase.name,
             "cube_position": self._cube_position().copy(),
