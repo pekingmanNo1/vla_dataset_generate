@@ -1,7 +1,0 @@
-{
-  "episode_index": 3,
-  "success": true,
-  "failure_reason": null,
-  "num_frames": 1050,
-  "instruction": "pick and place the cubes"
-}

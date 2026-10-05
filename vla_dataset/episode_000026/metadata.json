@@ -1,7 +1,0 @@
-{
-  "episode_index": 26,
-  "success": false,
-  "failure_reason": "Cube 1 was not lifted.",
-  "num_frames": 785,
-  "instruction": "pick and place the cubes"
-}

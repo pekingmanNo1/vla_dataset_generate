@@ -1,7 +1,0 @@
-{
-  "episode_index": 17,
-  "success": false,
-  "failure_reason": "DESCEND_PICK timed out after 5.000 s (position error 0.0405 m, orientation error 0.2255 rad).",
-  "num_frames": 874,
-  "instruction": "pick and place the cubes"
-}
