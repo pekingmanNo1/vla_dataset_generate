@@ -16,6 +16,8 @@ REQUIRED_KEYS = [
     "joint_velocity",
     "action_joint_position",
     "action_joint_velocity",
+    "eef_position",
+    "eef_orientation",
     "phase",
 ]
 
@@ -201,6 +203,32 @@ def main():
                 f"shape mismatch: "
                 f"{data['joint_position'].shape} vs "
                 f"{data['action_joint_position'].shape}"
+            )
+
+        # -----------------------------
+        # EEF pose sanity checks
+        # -----------------------------
+        eef_position = data["eef_position"]
+        eef_orientation = data["eef_orientation"]
+
+        if eef_position.ndim != 2:
+            episode_errors.append(
+                f"eef_position invalid shape {eef_position.shape}"
+            )
+        elif eef_position.shape[1] != 3:
+            episode_errors.append(
+                f"eef_position should have shape (N, 3), "
+                f"got {eef_position.shape}"
+            )
+
+        if eef_orientation.ndim != 2:
+            episode_errors.append(
+                f"eef_orientation invalid shape {eef_orientation.shape}"
+            )
+        elif eef_orientation.shape[1] != 4:
+            episode_errors.append(
+                f"eef_orientation should have shape (N, 4), "
+                f"got {eef_orientation.shape}"
             )
 
         # -----------------------------
