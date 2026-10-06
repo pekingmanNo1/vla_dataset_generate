@@ -134,6 +134,30 @@ class PickPlaceTask:
                     desired.joints.velocities.numpy().copy()
                 )
 
+        # 增加EEF pose
+        tool_frame = self.scenario.robot_config.tool.controller_frame
+
+        if (
+            estimated.sites is not None
+            and estimated.sites.positions is not None
+            and estimated.sites.orientations is not None
+        ):
+            sites = estimated.sites
+
+            if tool_frame in sites.position_names:
+                idx = sites.position_names.index(tool_frame)
+
+                frame["eef_position"] = (
+                    sites.positions.numpy()[idx].copy()
+                )
+
+            if tool_frame in sites.orientation_names:
+                idx = sites.orientation_names.index(tool_frame)
+
+                frame["eef_orientation"] = (
+                    sites.orientations.numpy()[idx].copy()
+                )
+
         self._episode_frames.append(frame)
 
     def _save_episode(self) -> None:
@@ -181,6 +205,14 @@ class PickPlaceTask:
             [frame["action_joint_velocity"] for frame in self._episode_frames]
         )
 
+        eef_positions = np.stack(
+            [frame["eef_position"] for frame in self._episode_frames]
+        )
+
+        eef_orientations = np.stack(
+            [frame["eef_orientation"] for frame in self._episode_frames]
+        )
+
         np.savez_compressed(
             episode_dir / "trajectory.npz",
             timestamp=times,
@@ -191,6 +223,8 @@ class PickPlaceTask:
             joint_velocity=joint_velocities,
             action_joint_position=action_joint_positions,
             action_joint_velocity=action_joint_velocities,
+            eef_position=eef_positions,
+            eef_orientation=eef_orientations,
             phase=phases,
         )
 
