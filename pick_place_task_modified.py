@@ -26,6 +26,9 @@ from isaacsim.core.experimental.objects import Cube
 from isaacsim.core.experimental.prims import GeomPrim, RigidPrim
 from isaacsim.core.experimental.utils import transform as transform_utils
 from isaacsim.robot_motion.cumotion import RmpFlowController, load_cumotion_supported_robot
+from isaacsim.sensors.camera import Camera
+import omni.usd
+from pxr import UsdGeom, Gf
 
 from .controllers import (
     GripperCommand,
@@ -100,6 +103,9 @@ class PickPlaceTask:
         # 判断是否卡住
         self._episode_time = 0.0
         self._episode_timeout = 40.0
+
+        # 准备硬件
+        self.camera: Camera | None = None
 
     def _record_step(self, estimated: mg.RobotState, desired: mg.RobotState | None) -> None:
         frame = {
@@ -329,6 +335,52 @@ class PickPlaceTask:
             )
             self.cubes.append(cube)
             self.cube_paths.append(path)
+        # -----------------------------
+        # RGB Camera
+        # -----------------------------
+        
+        # wrist camera
+        camera_path = "/World/robot/panda_hand/wrist_camera"
+
+        self.camera = Camera(
+            prim_path=camera_path,
+            name="wrist_camera",
+            resolution=(640, 480),
+            frequency=10
+        )
+
+        # local translation relative to panda_hand
+        stage = omni.usd.get_context().get_stage()
+        camera_prim = stage.GetPrimAtPath(camera_path)
+
+        xform = UsdGeom.Xformable(camera_prim)
+
+        # --------------------------------
+        # Local translation
+        # --------------------------------
+
+
+        for op in xform.GetOrderedXformOps():
+            if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
+                op.Set(Gf.Vec3d(0.3, 0.0, -5.00))
+                break
+
+        # --------------------------------
+        # Local rotation
+        # --------------------------------
+
+        rotation = (
+            Gf.Rotation(Gf.Vec3d(1, 0, 0), 180) *
+            Gf.Rotation(Gf.Vec3d(0, 1, 0), 0) *
+            Gf.Rotation(Gf.Vec3d(0, 0, 1), 90) # 注意这里的z轴和isaacsim上的orientation会相反，比如如果这里是90，在isaacsim上面会是-90，所以要反过来
+        )
+
+        quat = rotation.GetQuat()
+
+        for op in xform.GetOrderedXformOps():
+            if op.GetOpType() == UsdGeom.XformOp.TypeOrient:
+                op.Set(quat)
+                break
 
     def initialize(self, exclude_prim_paths: Iterable[str] = ()) -> None: # 建立真正的controller
         self.scenario.initialize_world_binding(exclude_prim_paths)
@@ -392,6 +444,10 @@ class PickPlaceTask:
             approach_height=0.30,
             grasp_position_tolerance=0.025 if isinstance(gripper, SurfaceGripperConfig) else None,
         )
+        if self.camera is not None:
+            self.camera.initialize()
+            self.camera.add_rgb_to_frame()
+
         self.reset()
 
     def reset(self) -> None:
@@ -608,6 +664,13 @@ class PickPlaceTask:
     
         self.scenario.sync_world()
         estimated = self.scenario.read_robot_state() # robot state / proprioception
+
+        # 获取摄像头数据
+        if self.camera is not None:
+            rgb = self.camera.get_rgb()
+
+            if rgb is not None:
+                print("RGB shape:", rgb.shape)
 
         if self._needs_reset: # 第一次运行：创建goal
             self._goal_setpoint = self._capture_setpoint()
