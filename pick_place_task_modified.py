@@ -29,6 +29,8 @@ from isaacsim.robot_motion.cumotion import RmpFlowController, load_cumotion_supp
 from isaacsim.sensors.camera import Camera
 import omni.usd
 from pxr import UsdGeom, Gf
+from PIL import Image
+
 
 from .controllers import (
     GripperCommand,
@@ -107,6 +109,22 @@ class PickPlaceTask:
         # 准备硬件
         self.camera: Camera | None = None
 
+        # 准备rgb图像采集
+        self._episode_frame_index = 0
+        self._current_episode_dir: Path | None = None
+
+
+    def _prepare_episode_directory(self) -> None:
+        self._current_episode_dir = (
+            self._dataset_root / f"episode_{self._episode_index:06d}"
+        )
+        self._current_episode_dir.mkdir(parents=True, exist_ok=True)
+
+        rgb_dir = self._current_episode_dir / "rgb"
+        rgb_dir.mkdir(parents=True, exist_ok=True)
+
+        self._episode_frame_index = 0
+
     def _record_step(self, estimated: mg.RobotState, desired: mg.RobotState | None) -> None:
         frame = {
             "time": float(self._episode_time),
@@ -164,7 +182,27 @@ class PickPlaceTask:
                     sites.orientations.numpy()[idx].copy()
                 )
 
+        # RGB observation
+        if self.camera is not None and self._current_episode_dir is not None:
+            rgb = self.camera.get_rgb()
+
+            if rgb is not None:
+                rgb_path = (
+                    self._current_episode_dir
+                    / "rgb"
+                    / f"{self._episode_frame_index:06d}.png"
+                )
+
+                Image.fromarray(
+                    rgb.astype(np.uint8)
+                ).save(rgb_path)
+
+                frame["rgb_path"] = str(
+                    Path("rgb") / f"{self._episode_frame_index:06d}.png"
+                )
+
         self._episode_frames.append(frame)
+        self._episode_frame_index += 1
 
     def _save_episode(self) -> None:
         if not self._episode_frames:
@@ -285,6 +323,8 @@ class PickPlaceTask:
 
         # 每个 episode 随机化
         self._randomize_episode()
+
+        self._prepare_episode_directory()
 
         print(f"[Dataset] Starting episode {self._episode_index}")
 
@@ -464,6 +504,7 @@ class PickPlaceTask:
         self._lift_checked = False
         self._settle_time = 0.0
         self._completion_time = 0.0
+        self._prepare_episode_directory()
 
     def reset_robot(self) -> None:
         self._release_attachment()
@@ -664,13 +705,6 @@ class PickPlaceTask:
     
         self.scenario.sync_world()
         estimated = self.scenario.read_robot_state() # robot state / proprioception
-
-        # 获取摄像头数据
-        if self.camera is not None:
-            rgb = self.camera.get_rgb()
-
-            if rgb is not None:
-                print("RGB shape:", rgb.shape)
 
         if self._needs_reset: # 第一次运行：创建goal
             self._goal_setpoint = self._capture_setpoint()
