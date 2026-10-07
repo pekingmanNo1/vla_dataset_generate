@@ -161,6 +161,56 @@ class PickPlaceTask:
                     desired.joints.velocities.numpy().copy()
                 )
 
+        # -----------------------------
+        # Gripper state / action
+        # -----------------------------
+        gripper_config = self.scenario.robot_config.gripper
+
+        if isinstance(gripper_config, JointGripperConfig):
+
+            # Actual gripper state
+            if (
+                estimated.joints is not None
+                and estimated.joints.positions is not None
+            ):
+                gripper_positions = []
+
+                for joint_name in gripper_config.joint_names:
+                    if joint_name in estimated.joints.position_names:
+                        idx = estimated.joints.position_names.index(joint_name)
+
+                        gripper_positions.append(
+                            float(estimated.joints.positions.numpy()[idx])
+                        )
+
+                if len(gripper_positions) == len(gripper_config.joint_names):
+                    frame["gripper_position"] = np.asarray(
+                        gripper_positions,
+                        dtype=np.float32,
+                    )
+
+            # Desired gripper action
+            if (
+                desired is not None
+                and desired.joints is not None
+                and desired.joints.positions is not None
+            ):
+                gripper_action = []
+
+                for joint_name in gripper_config.joint_names:
+                    if joint_name in desired.joints.position_names:
+                        idx = desired.joints.position_names.index(joint_name)
+
+                        gripper_action.append(
+                            float(desired.joints.positions.numpy()[idx])
+                        )
+
+                if len(gripper_action) == len(gripper_config.joint_names):
+                    frame["gripper_action"] = np.asarray(
+                        gripper_action,
+                        dtype=np.float32,
+                    )
+
         # 增加EEF pose
         tool_frame = self.scenario.robot_config.tool.controller_frame
 
@@ -312,6 +362,20 @@ class PickPlaceTask:
             ]
         )
 
+        gripper_positions = np.stack(
+            [
+                frame["gripper_position"]
+                for frame in self._episode_frames
+            ]
+        )
+
+        gripper_actions = np.stack(
+            [
+                frame["gripper_action"]
+                for frame in self._episode_frames
+            ]
+        )
+
         np.savez_compressed(
             episode_dir / "trajectory.npz",
             timestamp=times,
@@ -322,6 +386,8 @@ class PickPlaceTask:
             joint_velocity=joint_velocities,
             action_joint_position=action_joint_positions,
             action_joint_velocity=action_joint_velocities,
+            gripper_position=gripper_positions,
+            gripper_action=gripper_actions,
             eef_position=eef_positions,
             eef_orientation=eef_orientations,
             camera_position=camera_positions,

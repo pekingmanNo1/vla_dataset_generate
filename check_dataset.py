@@ -16,6 +16,8 @@ REQUIRED_KEYS = [
     "joint_velocity",
     "action_joint_position",
     "action_joint_velocity",
+    "gripper_position",
+    "gripper_action",
     "eef_position",
     "eef_orientation",
     "camera_position",
@@ -251,6 +253,46 @@ def main():
             episode_errors.append(
                 f"camera_orientation should have shape "
                 f"({num_frames}, 4), got {camera_orientation.shape}"
+            )
+
+        # -----------------------------
+        # Gripper sanity checks
+        # -----------------------------
+        gripper_position = data["gripper_position"]
+        gripper_action = data["gripper_action"]
+
+        if gripper_position.ndim != 2:
+            episode_errors.append(
+                f"gripper_position invalid shape "
+                f"{gripper_position.shape}"
+            )
+
+        if gripper_action.ndim != 2:
+            episode_errors.append(
+                f"gripper_action invalid shape "
+                f"{gripper_action.shape}"
+            )
+
+        if gripper_position.shape[0] != num_frames:
+            episode_errors.append(
+                f"gripper_position frame count "
+                f"{gripper_position.shape[0]}, "
+                f"expected {num_frames}"
+            )
+
+        if gripper_action.shape[0] != num_frames:
+            episode_errors.append(
+                f"gripper_action frame count "
+                f"{gripper_action.shape[0]}, "
+                f"expected {num_frames}"
+            )
+
+        if gripper_position.shape != gripper_action.shape:
+            episode_errors.append(
+                "gripper_position and gripper_action "
+                f"shape mismatch: "
+                f"{gripper_position.shape} vs "
+                f"{gripper_action.shape}"
             )
 
         # -----------------------------
