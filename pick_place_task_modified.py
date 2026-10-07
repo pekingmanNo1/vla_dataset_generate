@@ -123,6 +123,9 @@ class PickPlaceTask:
         rgb_dir = self._current_episode_dir / "rgb"
         rgb_dir.mkdir(parents=True, exist_ok=True)
 
+        depth_dir = self._current_episode_dir / "depth"
+        depth_dir.mkdir(parents=True, exist_ok=True)
+
         self._episode_frame_index = 0
 
     def _record_step(self, estimated: mg.RobotState, desired: mg.RobotState | None) -> None:
@@ -182,6 +185,22 @@ class PickPlaceTask:
                     sites.orientations.numpy()[idx].copy()
                 )
 
+        # Camera world pose
+        if self.camera is not None:
+            camera_position, camera_orientation = (
+                self.camera.get_world_pose(camera_axes="world")
+            )
+
+            frame["camera_position"] = np.asarray(
+                camera_position,
+                dtype=np.float32,
+            ).copy()
+
+            frame["camera_orientation"] = np.asarray(
+                camera_orientation,
+                dtype=np.float32,
+            ).copy()
+
         # RGB observation
         if self.camera is not None and self._current_episode_dir is not None:
             rgb = self.camera.get_rgb()
@@ -199,6 +218,28 @@ class PickPlaceTask:
 
                 frame["rgb_path"] = str(
                     Path("rgb") / f"{self._episode_frame_index:06d}.png"
+                )
+
+        # Depth observation
+        if self.camera is not None and self._current_episode_dir is not None:
+            camera_frame = self.camera.get_current_frame()
+
+            depth = camera_frame.get("distance_to_image_plane")
+
+            if depth is not None:
+                depth_path = (
+                    self._current_episode_dir
+                    / "depth"
+                    / f"{self._episode_frame_index:06d}.npy"
+                )
+
+                np.save(
+                    depth_path,
+                    depth.astype(np.float32)
+                )
+
+                frame["depth_path"] = str(
+                    Path("depth") / f"{self._episode_frame_index:06d}.npy"
                 )
 
         self._episode_frames.append(frame)
@@ -257,6 +298,20 @@ class PickPlaceTask:
             [frame["eef_orientation"] for frame in self._episode_frames]
         )
 
+        camera_positions = np.stack(
+            [
+                frame["camera_position"]
+                for frame in self._episode_frames
+            ]
+        )
+
+        camera_orientations = np.stack(
+            [
+                frame["camera_orientation"]
+                for frame in self._episode_frames
+            ]
+        )
+
         np.savez_compressed(
             episode_dir / "trajectory.npz",
             timestamp=times,
@@ -269,6 +324,8 @@ class PickPlaceTask:
             action_joint_velocity=action_joint_velocities,
             eef_position=eef_positions,
             eef_orientation=eef_orientations,
+            camera_position=camera_positions,
+            camera_orientation=camera_orientations,
             phase=phases,
         )
 
@@ -487,6 +544,7 @@ class PickPlaceTask:
         if self.camera is not None:
             self.camera.initialize()
             self.camera.add_rgb_to_frame()
+            self.camera.add_distance_to_image_plane_to_frame()
 
         self.reset()
 

@@ -2,7 +2,7 @@ from pathlib import Path
 from collections import Counter
 import json
 import numpy as np
-
+from PIL import Image
 
 DATASET_ROOT = Path("vla_dataset")
 
@@ -18,6 +18,8 @@ REQUIRED_KEYS = [
     "action_joint_velocity",
     "eef_position",
     "eef_orientation",
+    "camera_position",
+    "camera_orientation",
     "phase",
 ]
 
@@ -55,6 +57,8 @@ def main():
     for episode_dir in episode_dirs:
         npz_path = episode_dir / "trajectory.npz"
         metadata_path = episode_dir / "metadata.json"
+        rgb_dir = episode_dir / "rgb"
+        depth_dir = episode_dir / "depth"
 
         episode_errors = []
 
@@ -72,7 +76,7 @@ def main():
                 (episode_dir.name, episode_errors)
             )
             continue
-
+    
         # -----------------------------
         # Load metadata
         # -----------------------------
@@ -232,6 +236,24 @@ def main():
             )
 
         # -----------------------------
+        # Camera pose sanity checks
+        # -----------------------------
+        camera_position = data["camera_position"]
+        camera_orientation = data["camera_orientation"]
+
+        if camera_position.shape != (num_frames, 3):
+            episode_errors.append(
+                f"camera_position should have shape "
+                f"({num_frames}, 3), got {camera_position.shape}"
+            )
+
+        if camera_orientation.shape != (num_frames, 4):
+            episode_errors.append(
+                f"camera_orientation should have shape "
+                f"({num_frames}, 4), got {camera_orientation.shape}"
+            )
+
+        # -----------------------------
         # Basic active_cube sanity check
         # -----------------------------
         active_cube = data["active_cube"]
@@ -252,10 +274,111 @@ def main():
                     "timestamp is not monotonically increasing"
                 )
 
+        # -----------------------------
+        # RGB checks
+        # -----------------------------
+        if not rgb_dir.exists():
+            episode_errors.append("rgb directory missing")
+        else:
+            rgb_files = sorted(rgb_dir.glob("*.png"))
+
+            if len(rgb_files) != num_frames:
+                episode_errors.append(
+                    f"RGB frame count={len(rgb_files)}, "
+                    f"expected={num_frames}"
+                )
+
+            # Check expected filenames and readability
+            for i in range(num_frames):
+                rgb_path = rgb_dir / f"{i:06d}.png"
+
+                if not rgb_path.exists():
+                    episode_errors.append(
+                        f"missing RGB frame: {rgb_path.name}"
+                    )
+                    continue
+
+                try:
+                    with Image.open(rgb_path) as img:
+                        if img.size != (640, 480):
+                            episode_errors.append(
+                                f"{rgb_path.name} expected size "
+                                f"(640, 480), got {img.size}"
+                            )
+
+                        if img.mode not in {"RGB", "RGBA"}:
+                            episode_errors.append(
+                                f"{rgb_path.name} unexpected mode {img.mode}"
+                            )
+
+                        img.verify()
+
+                except Exception as e:
+                    episode_errors.append(
+                        f"corrupted RGB frame {rgb_path.name}: {e}"
+                    )
+
+
+        # -----------------------------
+        # Depth checks
+        # -----------------------------
+        if not depth_dir.exists():
+            episode_errors.append("depth directory missing")
+        else:
+            depth_files = sorted(depth_dir.glob("*.npy"))
+
+            if len(depth_files) != num_frames:
+                episode_errors.append(
+                    f"Depth frame count={len(depth_files)}, "
+                    f"expected={num_frames}"
+                )
+
+            for i in range(num_frames):
+                depth_path = depth_dir / f"{i:06d}.npy"
+
+                if not depth_path.exists():
+                    episode_errors.append(
+                        f"missing depth frame: {depth_path.name}"
+                    )
+                    continue
+
+                try:
+                    depth = np.load(depth_path)
+
+                    if depth.ndim != 2:
+                        episode_errors.append(
+                            f"{depth_path.name} invalid depth shape "
+                            f"{depth.shape}"
+                        )
+
+                    if depth.shape != (480, 640):
+                        episode_errors.append(
+                            f"{depth_path.name} expected shape "
+                            f"(480, 640), got {depth.shape}"
+                        )
+
+                    if depth.dtype != np.float32:
+                        episode_errors.append(
+                            f"{depth_path.name} expected float32, "
+                            f"got {depth.dtype}"
+                        )
+
+                    if not np.all(np.isfinite(depth)):
+                        episode_errors.append(
+                            f"{depth_path.name} contains NaN or Inf"
+                        )
+
+                except Exception as e:
+                    episode_errors.append(
+                        f"corrupted depth frame {depth_path.name}: {e}"
+                    )
+
         if episode_errors:
             invalid_episodes.append(
                 (episode_dir.name, episode_errors)
             )
+            continue
+
 
     # =====================================
     # Summary
